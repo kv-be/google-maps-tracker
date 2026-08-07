@@ -127,14 +127,20 @@ def update_html_index(folder, naam, timestamp, leesbare_datum, reistijd, img_fil
 os.makedirs("screenshots", exist_ok=True)
 update_main_index()
 
+browser = p.chromium.launch(
+    channel="chrome",
+    headless=True
+)
+
+
 with sync_playwright() as p:
     # 3. GPU Hardwareversnelling voor Chromium
     browser = p.chromium.launch(
         headless=True,
         args=[
-            '--use-gl=angle',
-            '--use-angle=gl-egl',
-            '--ignore-gpu-blocklist',
+            #'--use-gl=angle',
+            #'--use-angle=gl-egl',
+            #'--ignore-gpu-blocklist',
             '--no-sandbox'
         ]
     )
@@ -199,6 +205,13 @@ with sync_playwright() as p:
             print(f"Fout reistijd: {e}")
 
         # Screenshot opslaan
+        page.evaluate("""
+        () => {
+            window.dispatchEvent(new Event('resize'));
+        }
+        """)
+        
+        time.sleep(3)
         img_filename = f"{timestamp}_{item['naam']}.png"
         img_path = os.path.join(folder, img_filename)
         page.screenshot(path=img_path)
