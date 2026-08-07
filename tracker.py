@@ -1,9 +1,12 @@
 import time
 import os
 import re
+import hashlib
 from datetime import datetime
 import zoneinfo
 from playwright.sync_api import sync_playwright
+
+HEADLESS = True
 
 # 1. Tijdzone voor België/Europa (UTC+2 in zomertijd)
 brussels_tz = zoneinfo.ZoneInfo("Europe/Brussels")
@@ -15,7 +18,7 @@ leesbare_datum = now.strftime("%d-%m-%Y om %H:%M")
 ROUTES = [
     {
         "naam": "Tienen-Ingolstadt", 
-        "url": "https://www.google.com/maps/dir/Tienen,+3300,+Belgium/Ingolstadt,+Germany/@49.5,7.5,7z/data=!3m1!4b1!4m14!4m13!1m5!1m1!1s0x47c162f27eb681ed:0x40099ab2f4d5090!2m2!1d4.9376679!2d50.8066223!1m5!1m1!1s0x479e3ec015091ff7:0x421d4b553018220!2m2!1d11.424112!2d48.7665351!3e0?hl=nl"
+        "url": "https://www.google.com/maps/dir/Tienen,+3300,+Belgium/Ingolstadt,+Germany/@49.6549338,6.9002618,8z/data=!3m1!4b1!4m14!4m13!1m5!1m1!1s0x47c162f27eb681ed:0x40099ab2f4d5090!2m2!1d4.9376679!2d50.8066223!1m5!1m1!1s0x479e3ec015091ff7:0x421d4b553018220!2m2!1d11.424112!2d48.7665351!3e0?hl=nl&entry=ttu&g_ep=EgoyMDI2MDgwNC4wIKXMDSoASAFQAw%3D%3D"
     },
     {
         "naam": "Ingolstadt-Bohinj", 
@@ -26,6 +29,138 @@ ROUTES = [
         "url": "https://www.google.com/maps/dir/Kobarid,+Slovenia/Tienen,+3300,+Belgium/@48.0,9.0,6z/data=!3m1!4b1!4m14!4m13!1m5!1m1!1s0x477a33b664d6032d:0x00021b3342672bfd!2m2!1d13.5786487!2d46.2462319!1m5!1m1!1s0x47c162f27eb681ed:0x40099ab2f4d5090!2m2!1d4.9376679!2d50.8066223!3e0?hl=nl"
     }
 ]
+
+
+def wait_for_maps_route_ready(page, timeout_ms=90000):
+    # Wait for both route text and a real map canvas so first render is complete.
+    page.wait_for_function(
+        r"""
+        () => {
+            const bodyText = document.body?.innerText || "";
+            const hasDuration = /(\d+\s*(?:uur|u|h)\s*\d*\s*(?:min|m)?|\d+\s*min)/i.test(bodyText);
+
+            const canvases = Array.from(document.querySelectorAll('canvas'));
+            const hasLargeCanvas = canvases.some(c => c.width >= 800 && c.height >= 500);
+
+            const consentVisible = !!document.querySelector(
+                'form[action*="consent"], button[aria-label*="accepteren" i], button[aria-label*="accept" i]'
+            );
+
+            return hasDuration && hasLargeCanvas && !consentVisible;
+        }
+        """,
+        timeout=timeout_ms,
+    )
+
+    # Allow a few animation frames for tile/routeline paint stabilization.
+    page.evaluate(
+        """
+        async () => {
+            for (let i = 0; i < 45; i++) {
+                await new Promise(resolve => requestAnimationFrame(() => resolve()));
+            }
+        }
+        """
+    )
+
+
+def wait_for_stable_map_frame(page, max_checks=8, interval_ms=900):
+    # Require two identical full-frame screenshots before final capture.
+    previous_hash = None
+    for _ in range(max_checks):
+        frame_png = page.screenshot(type="png")
+        current_hash = hashlib.sha1(frame_png).hexdigest()
+
+        if previous_hash == current_hash:
+            return True
+
+        previous_hash = current_hash
+        page.wait_for_timeout(interval_ms)
+
+    return False
+
+
+def click_brussels_and_swap_twice(page):
+    try:
+        # Use the real Zoom In button from the map controls.
+        zoom_btn = page.locator(
+            'div.B5aTzc button[aria-label*="Inzoomen" i], '
+            'button[jsaction*="zoom.onZoomInOrTooltipBlur" i], '
+            'button[aria-label*="Zoom in" i]'
+        ).first
+        if zoom_btn.count() > 0 and zoom_btn.is_visible():
+            for _ in range(5):
+                zoom_btn.click(timeout=3000)
+                page.wait_for_timeout(300)
+        else:
+            print("Zoom-in knop niet gevonden op deze pagina.")
+    except Exception:
+        pass
+
+    try:
+        # Click route swap icon twice with 0.5s in between.
+        swap_btn = page.locator(
+            'button[aria-label*="Vertrekpunt en bestemming omkeren" i], '
+            'button[aria-label*="omkeren" i], '
+            'button[aria-label*="swap" i], '
+            'button[title*="omkeren" i], '
+            'button[title*="swap" i]'
+        ).first
+
+        if swap_btn.count() > 0 and swap_btn.is_visible():
+            swap_btn.click(timeout=3000)
+            page.wait_for_timeout(500)
+            swap_btn.click(timeout=3000)
+            page.wait_for_timeout(500)
+        else:
+            # Fallback: search all buttons for a matching label/title and click via JS.
+            clicked = page.evaluate(
+                """
+                () => {
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    const match = buttons.find((btn) => {
+                        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+                        const title = (btn.getAttribute('title') || '').toLowerCase();
+                        return label.includes('vertrekpunt en bestemming omkeren')
+                            || label.includes('omkeren')
+                            || label.includes('swap')
+                            || title.includes('omkeren')
+                            || title.includes('swap');
+                    });
+                    if (!match) return false;
+                    match.click();
+                    return true;
+                }
+                """
+            )
+            if clicked:
+                page.wait_for_timeout(500)
+                page.evaluate(
+                    """
+                    () => {
+                        const buttons = Array.from(document.querySelectorAll('button'));
+                        const match = buttons.find((btn) => {
+                            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+                            const title = (btn.getAttribute('title') || '').toLowerCase();
+                            return label.includes('vertrekpunt en bestemming omkeren')
+                                || label.includes('omkeren')
+                                || label.includes('swap')
+                                || title.includes('omkeren')
+                                || title.includes('swap');
+                        });
+                        if (match) match.click();
+                    }
+                    """
+                )
+                page.wait_for_timeout(500)
+            else:
+                print("Swap-knop niet gevonden op deze pagina.")
+    except Exception:
+        pass
+
+
+def launch_browser(playwright, headless):
+    return playwright.firefox.launch(headless=headless)
 
 def update_main_index():
     main_html_path = os.path.join("screenshots", "index.html")
@@ -129,19 +264,8 @@ update_main_index()
 
 
 with sync_playwright() as p:
-    # 3. GPU Hardwareversnelling voor Chromium
-    browser = p.chromium.launch(
-        headless=True,
-        # headless="new",
-        args=[
-            "--headless=new",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--use-gl=swiftshader",
-            "--ignore-gpu-blocklist",
-            "--enable-webgl",
-        ]
-    )
+    browser = launch_browser(p, HEADLESS)
+    print(f"Browser: firefox | headless={HEADLESS}")
     
     context = browser.new_context(
         viewport={'width': 1920, 'height': 1080},
@@ -175,33 +299,18 @@ with sync_playwright() as p:
             if cookie_btn.is_visible():
                 cookie_btn.click()
                 print("Cookies geaccepteerd.")
+                page.wait_for_timeout(1200)
         except Exception:
             pass
             
         # Zekerheids-klik om Google Maps uit een zwevend menu te forceren
         try:
             page.keyboard.press("Enter")
-        except:
+        except Exception:
             pass
 
-        # Geef Google Maps tijd om de routekaarten (WebGL) volledig te renderen
-        # time.sleep(12) 
-        #page.wait_for_function("""
-        #() => {
-        #    const body = document.body.innerText;
-        #    return /\d+\s*(uur|u|h).*\d+\s*min|\d+\s*min/.test(body);
-        #}
-        #""", timeout=60000)
 
-
-        page.wait_for_function("""
-        () => {
-            const canvases = document.querySelectorAll('canvas');
-            return canvases.length > 0;
-        }
-        """, timeout=60000)
-        
-        time.sleep(10)
+        wait_for_maps_route_ready(page)
 
         
         # Reistijd uitlezen
@@ -221,8 +330,13 @@ with sync_playwright() as p:
         }
         """)
 
-        page.wait_for_timeout(5000)
-        #time.sleep(3)
+        page.wait_for_timeout(1500)
+        if "Tienen-Ingolstadt" in item['naam'] :
+            click_brussels_and_swap_twice(page)
+        is_stable = wait_for_stable_map_frame(page)
+        if not is_stable:
+            print("Waarschuwing: kaartframe niet volledig gestabiliseerd binnen de limiet.")
+
         img_filename = f"{timestamp}_{item['naam']}.png"
         img_path = os.path.join(folder, img_filename)
 
