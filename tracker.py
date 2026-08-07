@@ -158,8 +158,8 @@ with sync_playwright() as p:
         print(f"Openen van {item['naam']}...")
         
         # 5. wait_until="commit" voorkomt de networkidle crash
-        page.goto(item['url'], wait_until="commit")
-
+        page.goto(item['url'], wait_until="domcontentloaded")
+       
         # Wacht tot het linkerpaneel in de pagina verschijnt
         try:
             page.wait_for_selector('div[role="main"]', timeout=20000)
@@ -223,6 +223,19 @@ with sync_playwright() as p:
         #time.sleep(3)
         img_filename = f"{timestamp}_{item['naam']}.png"
         img_path = os.path.join(folder, img_filename)
+
+        ## debug
+        print(page.evaluate("""
+        () => {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl');
+            if (!gl) return "GEEN WEBGL";
+        
+            return gl.getParameter(gl.RENDERER);
+        }
+        """))
+        
+        
         page.screenshot(path=img_path)
         print(f"Opgeslagen: {img_path} | Tijd: {leesbare_datum} | Reistijd: {reistijd_tekst}")
 
