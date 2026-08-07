@@ -25,19 +25,20 @@ with sync_playwright() as p:
         url = f"https://www.google.com/maps/dir/?api=1&origin={item['origin']}&destination={item['destination']}&travelmode=driving"
         print(f"Openen van {item['naam']}...")
         
-        page.goto(url, wait_until="networkidle")
+        # AANGEPAST: Wacht op 'domcontentloaded' i.p.v. 'networkidle' (voorkomt timeout!)
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
         # Accepteer automatisch de Google Cookie-melding indien aanwezig
         try:
-            page.click('button:has-text("Alles accepteren")', timeout=3000)
+            page.click('button:has-text("Alles accepteren")', timeout=4000)
         except Exception:
             try:
-                page.click('button:has-text("Accept all")', timeout=3000)
+                page.click('button:has-text("Accept all")', timeout=4000)
             except Exception:
                 pass
 
-        # Wacht 6 seconden tot alle rode/oranje filelijnen en reistijden geladen zijn
-        time.sleep(6)
+        # Wacht 8 seconden zodat de kaart en de rode/oranje filelijnen rustig inladen
+        time.sleep(8)
 
         # Sla de screenshot op met unieke datum en tijd
         filename = f"screenshots/{timestamp}_{item['naam']}.png"
