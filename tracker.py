@@ -2,18 +2,30 @@ import time
 import os
 import re
 from datetime import datetime
+import zoneinfo
 from playwright.sync_api import sync_playwright
 
-# 1. Routes definitie
-ROUTES = [
-    {"naam": "Tienen-Ingolstadt", "origin": "Tienen, Belgium", "destination": "Ingolstadt, Germany"},
-    {"naam": "Ingolstadt-Bohinj", "origin": "Ingolstadt, Germany", "destination": "Bohinj, Slovenia"},
-    {"naam": "Kobarid-Tienen", "origin": "Kobarid, Slovenia", "destination": "Tienen, Belgium"}
-]
-
-now = datetime.now()
+# Fix voor de juiste tijdzone (Brussel/België = UTC+2 in de zomer)
+brussels_tz = zoneinfo.ZoneInfo("Europe/Brussels")
+now = datetime.now(brussels_tz)
 timestamp = now.strftime("%Y-%m-%d_%H-%M")
 leesbare_datum = now.strftime("%d-%m-%Y om %H:%M")
+
+# Routes met exacte locaties om verkeerde zoekresultaten te voorkomen
+ROUTES = [
+    {
+        "naam": "Tienen-Ingolstadt", 
+        "url": "https://www.google.com/maps/dir/Tienen,+3300,+Belgium/Ingolstadt,+Germany/@49.5,7.5,7z/data=!3m1!4b1!4m14!4m13!1m5!1m1!1s0x47c162f27eb681ed:0x40099ab2f4d5090!2m2!1d4.9376679!2d50.8066223!1m5!1m1!1s0x479e3ec015091ff7:0x421d4b553018220!2m2!1d11.424112!2d48.7665351!3e0?hl=nl"
+    },
+    {
+        "naam": "Ingolstadt-Bohinj", 
+        "url": "https://www.google.com/maps/dir/Ingolstadt,+Germany/Bohinj,+Slovenia/@47.3,12.0,7z/data=!3m1!4b1!4m14!4m13!1m5!1m1!1s0x479e3ec015091ff7:0x421d4b553018220!2m2!1d11.424112!2d48.7665351!1m5!1m1!1s0x477a9416bb5a5efd:0x400451368e7f1f0!2m2!1d13.9535313!2d46.2792612!3e0?hl=nl"
+    },
+    {
+        "naam": "Kobarid-Tienen", 
+        "url": "https://www.google.com/maps/dir/Kobarid,+Slovenia/Tienen,+3300,+Belgium/@48.0,9.0,6z/data=!3m1!4b1!4m14!4m13!1m5!1m1!1s0x477a33b664d6032d:0x00021b3342672bfd!2m2!1d13.5786487!2d46.2462319!1m5!1m1!1s0x47c162f27eb681ed:0x40099ab2f4d5090!2m2!1d4.9376679!2d50.8066223!3e0?hl=nl"
+    }
+]
 
 def update_main_index():
     main_html_path = os.path.join("screenshots", "index.html")
@@ -144,13 +156,11 @@ with sync_playwright() as p:
         folder = os.path.join("screenshots", item['naam'])
         os.makedirs(folder, exist_ok=True)
 
-        url = f"https://www.google.com/maps/dir/{item['origin']}/{item['destination']}/@50.0000,8.0000,7z/data=!3m1!4b1!4m2!4m1!3e0?hl=nl"
         print(f"Openen van {item['naam']}...")
-        
-        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        page.goto(item['url'], wait_until="networkidle", timeout=60000)
 
-        # Cookie consent afhandeling
-        time.sleep(3)
+        # 1. Cookie consent afhandelen
+        time.sleep(2)
         try:
             cookie_btn = page.locator('button[aria-label="Alles accepteren"], button:has-text("Alles accepteren"), button:has-text("Accept all"), form[action*="consent"] button').first
             if cookie_btn.is_visible():
@@ -160,40 +170,35 @@ with sync_playwright() as p:
         except Exception:
             pass
 
-        # Verwijder eventuele overlays
+        # Eventuele overblijvende pop-ups sluiten
         page.evaluate("""() => {
             const elements = document.querySelectorAll('form[action*="consent"], div[class*="consent"]');
             elements.forEach(el => el.remove());
         }""")
 
-        time.sleep(12) 
+        # 2. Dwing Google Maps om de route daadwerkelijk te bevestigen/berekenen
+        page.keyboard.press("Enter")
+        time.sleep(10)
 
-        # VERBETERDE REISTIJD EXTRACTIE
+        # 3. Slimme reistijd extractie
         reistijd_tekst = "Reistijd onbekend"
         try:
-            # Methode 1: Zoek naar het specifieke primaire tijds-element van de eerste/aanbevolen route
-            primary_time_element = page.locator('div.Fk3v1d, div[class*="fontHeadlineLarge"]').first
-            if primary_time_element.is_visible():
-                text = primary_time_element.inner_text().strip()
-                if text:
-                    reistijd_tekst = text.replace('\n', ' ')
-            
-            # Methode 2: Als methode 1 niks oplevert, zoek breed in het linker paneel
-            if reistijd_tekst == "Reistijd onbekend":
+            primary_time = page.locator('div.Fk3v1d, div[class*="fontHeadlineLarge"]').first
+            if primary_time.is_visible():
+                reistijd_tekst = primary_time.inner_text().strip().replace('\n', ' ')
+            else:
                 panel_text = page.locator('div[role="main"]').inner_text()
-                # Match patronen zoals "9 u 15 min", "9 uur 15 min", "45 min" of "10 u."
                 matches = re.findall(r'(\d+\s*(?:uur|u|h)\s*\d*\s*(?:min|m)?|\d+\s*min)', panel_text, re.IGNORECASE)
                 if matches:
                     reistijd_tekst = matches[0].strip()
-
         except Exception as e:
-            print(f"Fout bij ophalen reistijd: {e}")
+            print(f"Fout reistijd: {e}")
 
-        # Screenshot maken
+        # 4. Screenshot opslaan
         img_filename = f"{timestamp}_{item['naam']}.png"
         img_path = os.path.join(folder, img_filename)
         page.screenshot(path=img_path)
-        print(f"Opgeslagen: {img_path} | Reistijd: {reistijd_tekst}")
+        print(f"Opgeslagen: {img_path} | Tijd: {leesbare_datum} | Reistijd: {reistijd_tekst}")
 
         update_html_index(folder, item['naam'], timestamp, leesbare_datum, reistijd_tekst, img_filename)
 
