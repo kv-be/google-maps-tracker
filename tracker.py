@@ -127,15 +127,11 @@ def update_html_index(folder, naam, timestamp, leesbare_datum, reistijd, img_fil
 os.makedirs("screenshots", exist_ok=True)
 update_main_index()
 
-browser = p.chromium.launch(
-    channel="chrome",
-    headless=True
-)
-
 
 with sync_playwright() as p:
     # 3. GPU Hardwareversnelling voor Chromium
     browser = p.chromium.launch(
+        channel="chrome",
         headless=True,
         args=[
             #'--use-gl=angle',
