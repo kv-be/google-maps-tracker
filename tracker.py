@@ -131,13 +131,15 @@ update_main_index()
 with sync_playwright() as p:
     # 3. GPU Hardwareversnelling voor Chromium
     browser = p.chromium.launch(
-        # headless=True,
-        headless="new",
+        headless=True,
+        # headless="new",
         args=[
-            '--no-sandbox',
-            '--disable-dev-shm-usage',
-            '--use-gl=swiftshader',
-            '--ignore-gpu-blocklist',
+            "--headless=new",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--use-gl=swiftshader",
+            "--ignore-gpu-blocklist",
+            "--enable-webgl",
         ]
     )
     
