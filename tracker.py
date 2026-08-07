@@ -131,13 +131,13 @@ update_main_index()
 with sync_playwright() as p:
     # 3. GPU Hardwareversnelling voor Chromium
     browser = p.chromium.launch(
-        channel="chrome",
-        headless=True,
+        # headless=True,
+        headless="new",
         args=[
-            #'--use-gl=angle',
-            #'--use-angle=gl-egl',
-            #'--ignore-gpu-blocklist',
-            '--no-sandbox'
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--use-gl=swiftshader',
+            '--ignore-gpu-blocklist',
         ]
     )
     
@@ -184,12 +184,24 @@ with sync_playwright() as p:
 
         # Geef Google Maps tijd om de routekaarten (WebGL) volledig te renderen
         # time.sleep(12) 
+        #page.wait_for_function("""
+        #() => {
+        #    const body = document.body.innerText;
+        #    return /\d+\s*(uur|u|h).*\d+\s*min|\d+\s*min/.test(body);
+        #}
+        #""", timeout=60000)
+
+
         page.wait_for_function("""
         () => {
-            const body = document.body.innerText;
-            return /\d+\s*(uur|u|h).*\d+\s*min|\d+\s*min/.test(body);
+            const canvases = document.querySelectorAll('canvas');
+            return canvases.length > 0;
         }
         """, timeout=60000)
+        
+        time.sleep(10)
+
+        
         # Reistijd uitlezen
         reistijd_tekst = "Reistijd onbekend"
         try:
@@ -206,8 +218,9 @@ with sync_playwright() as p:
             window.dispatchEvent(new Event('resize'));
         }
         """)
-        
-        time.sleep(3)
+
+        page.wait_for_timeout(5000)
+        #time.sleep(3)
         img_filename = f"{timestamp}_{item['naam']}.png"
         img_path = os.path.join(folder, img_filename)
         page.screenshot(path=img_path)
