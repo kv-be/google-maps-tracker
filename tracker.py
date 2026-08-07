@@ -16,9 +16,7 @@ timestamp = now.strftime("%Y-%m-%d_%H-%M")
 leesbare_datum = now.strftime("%d-%m-%Y om %H:%M")
 
 def update_main_index():
-    """ Maak een hoofd-index.html aan in /screenshots/ met links naar alle routes """
     main_html_path = os.path.join("screenshots", "index.html")
-    
     route_cards = ""
     for item in ROUTES:
         naam = item["naam"]
@@ -53,11 +51,7 @@ def update_main_index():
     <div class="container">
         <h1>📍 Verkeersdashboard</h1>
         <p class="subtitle">Kies een route om de live reistijden en screenshots te bekijken.</p>
-        
-        <div class="grid">
-            {route_cards}
-        </div>
-
+        <div class="grid">{route_cards}</div>
         <footer>Automatisch bijgewerkt via GitHub Actions</footer>
     </div>
 </body>
@@ -67,7 +61,6 @@ def update_main_index():
         f.write(html_content)
 
 def update_html_index(folder, naam, timestamp, leesbare_datum, reistijd, img_filename):
-    """ Maak of update de index.html per route-submap """
     html_path = os.path.join(folder, "index.html")
     
     if not os.path.exists(html_path):
@@ -124,67 +117,84 @@ def update_html_index(folder, naam, timestamp, leesbare_datum, reistijd, img_fil
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(content)
 
-# Hoofdmap aanmaken & Hoofd-index genereren
 os.makedirs("screenshots", exist_ok=True)
 update_main_index()
 
-# Playwright Browser Automatisering
 with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
+    browser = p.chromium.launch(
+        headless=True,
+        args=[
+            '--use-gl=angle',
+            '--use-angle=gl-egl',
+            '--ignore-gpu-blocklist',
+            '--disable-web-security',
+            '--no-sandbox'
+        ]
+    )
+    
     context = browser.new_context(
         viewport={'width': 1920, 'height': 1080},
-        locale='nl-NL'
+        locale='nl-NL',
+        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     )
+    
     page = context.new_page()
 
     for item in ROUTES:
         folder = os.path.join("screenshots", item['naam'])
         os.makedirs(folder, exist_ok=True)
 
-        url = f"https://www.google.com/maps/dir/?api=1&origin={item['origin']}&destination={item['destination']}&travelmode=driving"
+        url = f"https://www.google.com/maps/dir/{item['origin']}/{item['destination']}/@50.0000,8.0000,7z/data=!3m1!4b1!4m2!4m1!3e0?hl=nl"
         print(f"Openen van {item['naam']}...")
         
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
         # Cookie consent afhandeling
+        time.sleep(3)
         try:
-            page.wait_for_selector('button[aria-label="Alles accepteren"], button:has-text("Alles accepteren"), button:has-text("Accept all"), form[action*="consent"] button', timeout=8000)
             cookie_btn = page.locator('button[aria-label="Alles accepteren"], button:has-text("Alles accepteren"), button:has-text("Accept all"), form[action*="consent"] button').first
             if cookie_btn.is_visible():
                 cookie_btn.click()
-                print("Cookies geaccepteerd via klik.")
-            else:
-                page.evaluate("() => { const banner = document.querySelector('form[action*=\"consent\"], div[class*=\"consent\"]'); if(banner) banner.remove(); }")
-        except Exception:
-            page.evaluate("() => { const banner = document.querySelector('form[action*=\"consent\"], div[class*=\"consent\"]'); if(banner) banner.remove(); }")
-
-        # Wachten tot de route en kaart geladen zijn
-        try:
-            page.wait_for_selector('div.Eg5bL, .k9LqX, div[class*="directions-route"]', timeout=12000)
+                print("Cookies geaccepteerd.")
+                time.sleep(2)
         except Exception:
             pass
 
+        # Verwijder eventuele overlays
+        page.evaluate("""() => {
+            const elements = document.querySelectorAll('form[action*="consent"], div[class*="consent"]');
+            elements.forEach(el => el.remove());
+        }""")
+
         time.sleep(12) 
 
-        # Slimme reistijd-uitlezing
+        # VERBETERDE REISTIJD EXTRACTIE
         reistijd_tekst = "Reistijd onbekend"
         try:
-            candidates = page.locator('div[aria-label*="uur"], div[aria-label*="min"], span:has-text("uur"), span:has-text("min")').all()
-            for cand in candidates:
-                txt = cand.inner_text().strip()
-                if re.search(r'\d+\s*(uur|u|min)', txt, re.IGNORECASE):
-                    reistijd_tekst = txt.replace('\n', ' ')
-                    break
+            # Methode 1: Zoek naar het specifieke primaire tijds-element van de eerste/aanbevolen route
+            primary_time_element = page.locator('div.Fk3v1d, div[class*="fontHeadlineLarge"]').first
+            if primary_time_element.is_visible():
+                text = primary_time_element.inner_text().strip()
+                if text:
+                    reistijd_tekst = text.replace('\n', ' ')
+            
+            # Methode 2: Als methode 1 niks oplevert, zoek breed in het linker paneel
+            if reistijd_tekst == "Reistijd onbekend":
+                panel_text = page.locator('div[role="main"]').inner_text()
+                # Match patronen zoals "9 u 15 min", "9 uur 15 min", "45 min" of "10 u."
+                matches = re.findall(r'(\d+\s*(?:uur|u|h)\s*\d*\s*(?:min|m)?|\d+\s*min)', panel_text, re.IGNORECASE)
+                if matches:
+                    reistijd_tekst = matches[0].strip()
+
         except Exception as e:
             print(f"Fout bij ophalen reistijd: {e}")
 
-        # Screenshot opslaan
+        # Screenshot maken
         img_filename = f"{timestamp}_{item['naam']}.png"
         img_path = os.path.join(folder, img_filename)
         page.screenshot(path=img_path)
-        print(f"Opgeslagen: {img_path}")
+        print(f"Opgeslagen: {img_path} | Reistijd: {reistijd_tekst}")
 
-        # Submap HTML bijwerken
         update_html_index(folder, item['naam'], timestamp, leesbare_datum, reistijd_tekst, img_filename)
 
     browser.close()
